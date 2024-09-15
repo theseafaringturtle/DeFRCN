@@ -146,6 +146,11 @@ class BaseProtoSampler:
 
     def filter_samples(self, prototypes) -> Dict:
         samples_per_class = {}
+        if self.cfg.ABLATION:
+            for class_name in self.class_samples.keys():
+                samples_per_class[class_name] = list(self.class_samples[class_name])[:self.SAMPLES_NEEDED]
+            logger.info("Random samples returned (ablation)")
+            return samples_per_class
         for class_name in self.class_samples.keys():
             # same_class_dist = []
             # other_class_dist = []
@@ -357,6 +362,7 @@ def setup(args):
     cfg.NEW_DATASEED = None
     cfg.SAMPLE_SIZE = None
     cfg.SAMPLE_POOL_SIZE = None
+    cfg.ABLATION = False
     if args.opts:
         cfg.merge_from_list(args.opts)
     set_global_cfg(cfg)
