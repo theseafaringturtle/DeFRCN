@@ -116,7 +116,6 @@ class BaseProtoSampler:
 
             gt_classes = [x['instances'].gt_classes for x in inputs]
             self.sample_roi_labels[file_name] = gt_classes[0].cpu().clone()
-            print(gt_classes[0].cpu().clone().data)
             all_labels.append(gt_classes[0].cpu().clone().data)
 
         logger.info(f"Enough samples ({self.SAMPLES_NEEDED}) have been gathered")
