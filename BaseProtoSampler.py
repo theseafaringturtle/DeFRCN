@@ -114,11 +114,11 @@ class BaseProtoSampler:
             self.sample_roi_features[file_name] = features.cpu().clone()
             all_features.append(features.cpu().clone().data)
 
-            gt_classes = [x['instances'].gt_classes for x in inputs]
-            self.sample_roi_labels[file_name] = gt_classes[0].cpu().clone()
-            all_labels.append(gt_classes[0].cpu().clone().data)
+            gt_classes = inputs[0]['instances'].gt_classes
+            self.sample_roi_labels[file_name] = gt_classes.cpu().clone()
+            all_labels.append(gt_classes.cpu().clone().data)
 
-        logger.info(f"Enough samples ({self.SAMPLES_NEEDED}) have been gathered")
+        logger.info(f"Enough samples ({self.SAMPLE_POOL_SIZE}) have been gathered")
         end_time = time.perf_counter()
         logger.info(f"Sample gathering time: {end_time - start_time} s")
 
@@ -173,17 +173,6 @@ class BaseProtoSampler:
                         sim_score += sample_distances[label]
                 sim_tuple = (file_name, sim_score)
                 sim_scores.append(sim_tuple)
-                # # TODO could pick class samples similar to novel classes for harder ones, but will end up with misclassified labels
-                # for other_class_name in self.class_samples.keys():
-                #     dist = euclidean_distances(self.prototypes[int(other_class_name)], features)
-                #     sim_tuple = (file_name, dist, other_class_name)
-                #     if class_name == other_class_name:
-                #         same_class_dist.append(sim_tuple)
-                #     else:
-                #         other_class_dist.append(sim_tuple)
-
-            # same_class_dist.sort(key=lambda tup: tup[1])
-            # other_class_dist.sort(key=lambda tup: tup[1])
             sim_scores.sort(key=lambda tup: tup[1])
             # print(f"Distances: {sim_scores}")
             samples_per_class[class_name] = [file_name for file_name, dist in sim_scores[:self.SAMPLES_NEEDED]]
