@@ -29,9 +29,6 @@ from defrcn.evaluation.archs import resnet101
 logger = logging.getLogger("defrcn").getChild("sampler")
 
 
-# --num-gpus 1 --config-file configs/voc/defrcn_det_r101_base1.yaml --opts OUTPUT_DIR sampler_logs/  \
-# TEST.PCB_MODELPATH  "./ImageNetPretrained/torchvision/resnet101-5d3b4d8f.pth" SEED 0 PREV_DATASEED 1 NEW_DATASEED 31
-
 class BaseProtoSampler:
 
     def __init__(self, cfg):
@@ -44,12 +41,6 @@ class BaseProtoSampler:
         self.sample_roi_labels = {}  # file_name to feature labels
         self.class_samples = {cls_id: set() for cls_id in
                               range(cfg.MODEL.ROI_HEADS.NUM_CLASSES)}  # class_id to [file_name]
-        self.SAMPLE_POOL_SIZE = self.cfg.SAMPLE_POOL_SIZE
-        self.SAMPLES_NEEDED = self.cfg.SAMPLE_SIZE
-        if not self.SAMPLES_NEEDED:
-            raise Exception("Need to specify shots as a SAMPLE_SIZE cfg parameter (int)")
-        if not self.SAMPLE_POOL_SIZE:
-            raise Exception("Need to specify pool size as a SAMPLE_POOL_SIZE cfg parameter (int)")
 
         self.imagenet_model = self.build_model()
         self.dataloader = build_detection_test_loader(self.cfg, self.cfg.DATASETS.TRAIN[0])
@@ -67,7 +58,7 @@ class BaseProtoSampler:
         imagenet_model.eval()
         return imagenet_model
 
-    def build_prototypes(self):
+    def build_prototypes(self, pool_size: int):
         logger.info("Gathering samples...")
         start_time = time.perf_counter()
         # Adapted from DeFRCN's PCB code, but using loader for shuffling.
@@ -85,7 +76,7 @@ class BaseProtoSampler:
             assert len(inputs) == 1
 
             # We have enough samples to start ranking them, stop going through dataset
-            if all([len(v) >= self.SAMPLE_POOL_SIZE for k, v in self.class_samples.items()]):
+            if all([len(v) >= pool_size for k, v in self.class_samples.items()]):
                 break
 
             file_name = inputs[0]['file_name']
@@ -93,11 +84,11 @@ class BaseProtoSampler:
             gt_classes = inputs[0]['instances'].get("gt_classes")
 
             for c in gt_classes.tolist():
-                if len(self.class_samples[int(c)]) < self.SAMPLE_POOL_SIZE:
+                if len(self.class_samples[int(c)]) < pool_size:
                     has_req_classes.append(True)
                     self.class_samples[int(c)].add(file_name)
                     # Notify when a class's required sample pool has been filled
-                    if len(self.class_samples[int(c)]) >= self.SAMPLE_POOL_SIZE:
+                    if len(self.class_samples[int(c)]) >= pool_size:
                         logger.info(f"Sample pool for {self.base_class_id_to_name(c)} has been filled")
                     break
             if not any(has_req_classes):
@@ -119,7 +110,7 @@ class BaseProtoSampler:
             self.sample_roi_labels[file_name] = avg_labels.cpu().clone()
             all_labels.append(avg_labels.cpu().clone().data)
 
-        logger.info(f"Enough samples ({self.SAMPLE_POOL_SIZE}) have been gathered")
+        logger.info(f"Enough samples ({pool_size}) have been gathered for all classes")
         end_time = time.perf_counter()
         logger.info(f"Sample gathering time: {end_time - start_time} s")
 
@@ -164,12 +155,12 @@ class BaseProtoSampler:
 
         return avg_features, uniq_labels
 
-    def filter_samples(self, prototypes) -> Dict:
+    def filter_samples(self, prototypes: Dict, samples_needed: int, ablation=False) -> Dict:
         samples_per_class = {}
-        if self.cfg.ABLATION:
+        if ablation:
             for class_name in self.class_samples.keys():
-                samples_per_class[class_name] = list(self.class_samples[class_name])[:self.SAMPLES_NEEDED]
-            logger.info("Random samples returned (ablation)")
+                samples_per_class[class_name] = list(self.class_samples[class_name])[:samples_needed]
+            logger.info(f"Random {samples_needed} samples returned (ablation)")
             return samples_per_class
         for class_name in self.class_samples.keys():
             # same_class_dist = []
@@ -196,7 +187,7 @@ class BaseProtoSampler:
                 sim_scores.append(sim_tuple)
             sim_scores.sort(key=lambda tup: tup[1])
             # print(f"Distances: {sim_scores}")
-            samples_per_class[class_name] = [file_name for file_name, dist in sim_scores[:self.SAMPLES_NEEDED]]
+            samples_per_class[class_name] = [file_name for file_name, dist in sim_scores[:samples_needed]]
         logger.info("Samples have been ranked!")
         return samples_per_class
 
@@ -217,7 +208,7 @@ class BaseProtoSampler:
 
         return activation_vectors.detach()
 
-    def create_dirs(self) -> Tuple[str, str]:
+    def create_dirs(self, prev_seed, new_seed) -> Tuple[str, str]:
         train_set_name = self.cfg.DATASETS.TRAIN[0]
         if "voc" in train_set_name:
             base_dir = os.path.join('datasets', "vocsplit")
@@ -226,25 +217,17 @@ class BaseProtoSampler:
         else:
             raise Exception("Specify a split directory for your dataset")
         # Get previous directory for novel classes
-        prev_seed = self.cfg.get("PREV_DATASEED", None)
-        if prev_seed is None:
-            raise Exception(
-                "Specify PREV_DATASEED number as a config option. It should be one of your existing splits. This is required for keeping novel classes intact.")
         prev_seed_dir = os.path.join(base_dir, f"seed{prev_seed}")
         # Create new directory to store new data as a new seed, starting from whichever number was provided in config
-        new_seed = self.cfg.get("NEW_DATASEED", None)
-        if new_seed is None:
-            raise Exception(
-                "Specify NEW_DATASEED as a config option (int). This will add a new split directory or replace an existing one.")
         new_seed_dir = os.path.join(base_dir, f"seed{new_seed}")
         os.makedirs(new_seed_dir, exist_ok=True)
         return prev_seed_dir, new_seed_dir
 
-    def save(self, filenames_per_base_class: Dict):
+    def save(self, filenames_per_base_class: Dict, samples_needed: int, prev_seed: int, new_seed: int):
         logger.info("Saving split to disk...")
         # Copy novel class files verbatim, since changing those would change the benchmark
         train_set_name = self.cfg.DATASETS.TRAIN[0]
-        prev_seed_dir, new_seed_dir = self.create_dirs()
+        prev_seed_dir, new_seed_dir = self.create_dirs(prev_seed, new_seed)
         if 'voc' in train_set_name:
             txt_files = os.listdir(prev_seed_dir)
             # Get novel class names
@@ -256,7 +239,7 @@ class BaseProtoSampler:
             for class_name in novel_classes:
                 for file in txt_files:
                     if os.path.isfile(f"{prev_seed_dir}/{file}") \
-                            and class_name in file and f"_{self.SAMPLES_NEEDED}shot" in file:
+                            and class_name in file and f"_{samples_needed}shot" in file:
                         novel_txt_files.append(file)
             if not novel_txt_files:
                 raise Exception(f"No novel class txt files found under {prev_seed_dir}")
@@ -267,7 +250,7 @@ class BaseProtoSampler:
             for class_id, file_names in filenames_per_base_class.items():
                 # Note: instance filtering is performed later in meta_voc.py
                 class_name = self.base_class_id_to_name(class_id)
-                with open(f"{new_seed_dir}/box_{self.SAMPLES_NEEDED}shot_{class_name}_train.txt", 'w') as text_file:
+                with open(f"{new_seed_dir}/box_{samples_needed}shot_{class_name}_train.txt", 'w') as text_file:
                     text_file.write('\n'.join(file_names) + '\n')
         elif 'coco' in train_set_name:
             data_path = "datasets/cocosplit/datasplit/trainvalno5k.json"
@@ -310,7 +293,7 @@ class BaseProtoSampler:
             # Create base files
             for class_id, base_data in new_base_data.items():
                 class_name = self.base_class_id_to_name(class_id)
-                with open(f"{new_seed_dir}/full_box_{self.SAMPLES_NEEDED}shot_{class_name}_trainval.json",
+                with open(f"{new_seed_dir}/full_box_{samples_needed}shot_{class_name}_trainval.json",
                           'w') as json_file:
                     json.dump(base_data, json_file)
             # Copy novel files verbatim
@@ -320,8 +303,8 @@ class BaseProtoSampler:
                 raise Exception(
                     f"Dataset {train_set_name} has no novel_classes set, check builtin_meta.py for an example on how to set them")
             for class_name in novel_classes:
-                source = f"{prev_seed_dir}/full_box_{self.SAMPLES_NEEDED}shot_{class_name}_trainval.json"
-                dest = f"{new_seed_dir}/full_box_{self.SAMPLES_NEEDED}shot_{class_name}_trainval.json"
+                source = f"{prev_seed_dir}/full_box_{samples_needed}shot_{class_name}_trainval.json"
+                dest = f"{new_seed_dir}/full_box_{samples_needed}shot_{class_name}_trainval.json"
                 shutil.copy(source, dest)
                 logger.info(f"Copied {class_name}")
         else:
@@ -336,15 +319,7 @@ class BaseProtoSampler:
             return base_classes[class_id]
         elif 'coco' in train_set_name:
             cid_to_contiguous = MetadataCatalog.get(train_set_name).get("base_dataset_id_to_contiguous_id")
-            contiguous_to_cid = {v: k for k, v in cid_to_contiguous.items()}
-            # print(cid_to_contiguous)
-            # print(contiguous_to_cid)
-            # print(class_id)
-            # if class_id not in list(contiguous_to_cid.values()):
-            #     raise Exception(f"ID {class_id} not found among base classes")
-            # index = contiguous_to_cid[class_id]
-            # print(index)
-            # print(MetadataCatalog.get(train_set_name).as_dict())
+            # contiguous_to_cid = {v: k for k, v in cid_to_contiguous.items()}
             return MetadataCatalog.get(train_set_name).get("base_classes")[class_id]
         else:
             raise Exception(
@@ -367,11 +342,6 @@ def setup(args):
     cfg.set_new_allowed(True)
     cfg.merge_from_file(args.config_file)
     # Due to bug in yacs' merge_from_list (does not respect set_new_allowed when input is list)
-    cfg.PREV_DATASEED = None
-    cfg.NEW_DATASEED = None
-    cfg.SAMPLE_SIZE = None
-    cfg.SAMPLE_POOL_SIZE = None
-    cfg.ABLATION = False
     if args.opts:
         cfg.merge_from_list(args.opts)
     set_global_cfg(cfg)
@@ -382,14 +352,34 @@ def setup(args):
 def main(args):
     cfg = setup(args)
     cfg.defrost()
+    ablation = bool(args.ablation)
+    prev_seed = args.prev_seed
+    new_seed = args.new_seed
+    samples_needed = args.sample_out_size
+
     sampler = BaseProtoSampler(cfg)
-    prototypes = sampler.build_prototypes()
-    filenames_per_class = sampler.filter_samples(prototypes)
-    sampler.save(filenames_per_class)
+    prototypes = sampler.build_prototypes(args.sample_pool_size)
+    if type(samples_needed) is int:
+        filenames_per_class = sampler.filter_samples(prototypes, samples_needed, ablation=ablation)
+        sampler.save(filenames_per_class, samples_needed, prev_seed, new_seed)
+    else:
+        for s in samples_needed:
+            filenames_per_class = sampler.filter_samples(prototypes, s, ablation=ablation)
+            sampler.save(filenames_per_class, s, prev_seed, new_seed)
 
 
 if __name__ == "__main__":
-    args = default_argument_parser().parse_args()
+    parser = default_argument_parser()
+    parser.add_argument('--ablation', dest='ablation', default=0, type=int, help="Use random sampling instead of herd")
+    parser.add_argument('--sample_pool_size', dest='sample_pool_size', default=100, type=int,
+                        help="Number of samples to draw prototypes from")
+    parser.add_argument('--sample_out_size', dest='sample_out_size', default=5, nargs="+", type=int,
+                        help="Number of shots needed as output")
+    parser.add_argument('--prev_dataseed', dest='prev_seed', default=0, type=int,
+                        help="Int ID of one of your existing splits. This is required for keeping novel classes intact")
+    parser.add_argument('--new_dataseed', dest='new_seed', type=int,
+                        help="Int ID of output split, e.g. 30. This will add a new split directory or replace an existing one")
+    args = parser.parse_args()
     launch(
         main,
         args.num_gpus,
