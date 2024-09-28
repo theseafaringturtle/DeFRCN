@@ -90,8 +90,9 @@ class BaseProtoSampler:
 
             file_name = inputs[0]['file_name']
             has_req_classes = []
-            classes = inputs[0].get("instances").get("gt_classes").tolist()
-            for c in classes:
+            gt_classes = inputs[0]['instances'].get("gt_classes")
+
+            for c in gt_classes.tolist():
                 if len(self.class_samples[int(c)]) < self.SAMPLE_POOL_SIZE:
                     has_req_classes.append(True)
                     self.class_samples[int(c)].add(file_name)
@@ -110,13 +111,13 @@ class BaseProtoSampler:
             boxes = [x["instances"].gt_boxes.clone().to(self.device) for x in inputs]
 
             # extract roi features
-            features = self.extract_roi_features(img, boxes)
-            self.sample_roi_features[file_name] = features.cpu().clone()
-            all_features.append(features.cpu().clone().data)
+            _features = self.extract_roi_features(img, boxes)
+            avg_features, avg_labels = self.average_roi_features(_features, gt_classes)
+            self.sample_roi_features[file_name] = avg_features.cpu().clone()
+            all_features.append(avg_features.cpu().clone().data)
 
-            gt_classes = inputs[0]['instances'].gt_classes
-            self.sample_roi_labels[file_name] = gt_classes.cpu().clone()
-            all_labels.append(gt_classes.cpu().clone().data)
+            self.sample_roi_labels[file_name] = avg_labels.cpu().clone()
+            all_labels.append(avg_labels.cpu().clone().data)
 
         logger.info(f"Enough samples ({self.SAMPLE_POOL_SIZE}) have been gathered")
         end_time = time.perf_counter()
@@ -142,6 +143,26 @@ class BaseProtoSampler:
             prototypes_dict[label] = torch.mean(features, dim=0, keepdim=True)
 
         return prototypes_dict
+
+    def average_roi_features(self, features, labels) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Average features for instances of the same class appearing in the same image.
+           This makes images with multiple object instances less over-represented in final prototype"""
+        # Get unique labels and their indices
+        uniq_labels, indices = torch.unique(labels, return_inverse=True)
+        uniq_labels = uniq_labels.to(features.device)
+        indices = indices.to(features.device)
+
+        # Use scatter_add to sum features for each unique label
+        avg_features = torch.zeros(uniq_labels.size(0), features.size(1), dtype=features.dtype, device=features.device)
+        avg_features.scatter_add_(0, indices.unsqueeze(1).expand(-1, features.size(1)), features)
+
+        # Count occurrences of each label
+        label_counts = torch.bincount(indices)
+
+        # Divide summed features by label counts to get averages
+        avg_features /= label_counts.float().unsqueeze(1)
+
+        return avg_features, uniq_labels
 
     def filter_samples(self, prototypes) -> Dict:
         samples_per_class = {}
@@ -244,7 +265,7 @@ class BaseProtoSampler:
                 shutil.copy(f"{prev_seed_dir}/{file}", f"{new_seed_dir}")
             # Copy our new base class txt files
             for class_id, file_names in filenames_per_base_class.items():
-                # TODO: while VOC usually has 1 object per image, filter out crowd / other annotations like with COCO below
+                # Note: instance filtering is performed later in meta_voc.py
                 class_name = self.base_class_id_to_name(class_id)
                 with open(f"{new_seed_dir}/box_{self.SAMPLES_NEEDED}shot_{class_name}_train.txt", 'w') as text_file:
                     text_file.write('\n'.join(file_names) + '\n')
