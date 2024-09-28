@@ -12,8 +12,8 @@ SAMPLE_OUT_SIZE=10
 ABLATION=0
 
 for ((i=0; i<10; i++)); do
-  python BaseProtoSampler.py --num-gpus 1 --config-file configs/coco/defrcn_det_r101_base.yaml \
-  --sample_pool_size=$SAMPLE_POOL_SIZE --sample_out_size=$SAMPLE_OUT_SIZE --ablation=ABLATION \
+  python sampler.py --num-gpus 1 --config-file configs/coco/defrcn_det_r101_base.yaml \
+  --sample_pool_size=$SAMPLE_POOL_SIZE --sample_out_size=$SAMPLE_OUT_SIZE --ablation=$ABLATION \
   --prev_dataseed $i --new_dataseed  $((30+i)) \
   --opts OUTPUT_DIR sampler_logs/coco/seed$((10+i)) TEST.PCB_MODELPATH  "./ImageNetPretrained/torchvision/resnet101-5d3b4d8f.pth" \
    SEED 0
