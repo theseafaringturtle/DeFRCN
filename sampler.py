@@ -1,7 +1,7 @@
 
-# Determinism
 import logging
 import os
+from packaging.version import Version
 
 import torch
 from detectron2.engine import launch
@@ -11,15 +11,17 @@ from BaseProtoSampler import BaseProtoSampler
 from defrcn.config import get_cfg, set_global_cfg
 from defrcn.engine import default_setup, default_argument_parser
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-if "1.8.2" in torch.__version__:
-    torch.use_deterministic_algorithms(True)
-else:
-    torch.use_deterministic_algorithms(True, warn_only=True)
-
 logger = logging.getLogger(__name__)
+
+# Determinism
+if Version(torch.__version__) >= Version("1.11"):
+    torch.use_deterministic_algorithms(True, warn_only=True)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+else:
+    logger.warning("Pytorch < 1.11 detected: results will not be deterministic")
+
 
 
 def setup(args):
@@ -45,9 +47,9 @@ def main(args):
     samples_needed = args.sample_out_size
 
     if ablation:
-        sampler = BaseProtoSampler(cfg)
-    else:
         sampler = BaseAblationSampler(cfg)
+    else:
+        sampler = BaseProtoSampler(cfg)
     prototypes = sampler.build_prototypes(args.sample_pool_size)
     for s in samples_needed:
         filenames_per_class = sampler.filter_samples(prototypes, s)
@@ -59,13 +61,15 @@ if __name__ == "__main__":
     parser.add_argument('--ablation', dest='ablation', default=0, type=int, help="Use random sampling instead of herd")
     parser.add_argument('--sample_pool_size', dest='sample_pool_size', default=100, type=int,
                         help="Number of samples to draw prototypes from")
-    parser.add_argument('--sample_out_size', dest='sample_out_size', default=5, nargs="+", type=int,
+    parser.add_argument('--sample_out_size', dest='sample_out_size', default=[5],
+                        type=lambda s: [int(token.strip()) for token in s.split(' ')],
                         help="Number of shots needed as output")
     parser.add_argument('--prev_dataseed', dest='prev_seed', default=0, type=int,
                         help="Int ID of one of your existing splits. This is required for keeping novel classes intact")
     parser.add_argument('--new_dataseed', dest='new_seed', type=int,
                         help="Int ID of output split, e.g. 30. This will add a new split directory or replace an existing one")
     args = parser.parse_args()
+    logger.info(f"Shots: {args.sample_out_size}")
     launch(
         main,
         args.num_gpus,

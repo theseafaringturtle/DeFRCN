@@ -302,7 +302,7 @@ class BaseProtoSampler:
         else:
             raise Exception(
                 f"You need to implement data split saving for {train_set_name}, check this function and https://github.com/ucbdrive/few-shot-object-detection/tree/master/datasets")
-        logger.info(f"Split saved to {new_seed_dir}!")
+        logger.info(f"Split saved to {new_seed_dir}! ({samples_needed}-shot)")
 
     def base_class_id_to_name(self, class_id: int):
         train_set_name = self.cfg.DATASETS.TRAIN[0]
